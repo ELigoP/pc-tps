@@ -1,122 +1,152 @@
-def calculate_llm_performance(
-    motherboard_price,
-    motherboard_ram_slots,
-    ram_stick_speed,    # GB/s per stick
-    ram_stick_price,
-    motherboard_pcie_slots,
-    gpu_vram,           # GB per GPU
-    gpu_price,
-    # Model parameters (with sensible defaults)
-    total_parameters=680,          # in billions
-    active_parameters_per_token=35, # in billions
-    active_in_vram=15,              # in billions
-    context_length=11000,           # tokens
-    bits_per_weight=5,
-    efficiency_factor=0.5           # real-world efficiency
-):
-    """
-    Calculates LLM system performance metrics and costs.
-    
-    Returns: {
-        "total_price": float,
-        "ram_bandwidth": float,    # GB/s
-        "token_gen_speed": float,   # tokens/sec
-        "prompt_speed": float,      # tokens/sec
-        "vram_warning": str or None
-    }
-    """
-    # Calculate RAM configuration
-    total_ram_bandwidth = motherboard_ram_slots * ram_stick_speed
-    ram_cost = motherboard_ram_slots * ram_stick_price
-    
-    # Calculate GPU configuration
-    num_gpus = min(motherboard_pcie_slots, 8)  # Practical limit
-    gpu_cost = num_gpus * gpu_price
-    total_vram = num_gpus * gpu_vram
-    
-    # Cost calculations
-    total_price = motherboard_price + ram_cost + gpu_cost
-    
-    # Performance calculations
-    active_in_ram = active_parameters_per_token - active_in_vram
-    bytes_per_token = (active_in_ram * 1e9 * bits_per_weight) / 8
-    
-    # Token generation speed (GB/s bandwidth → tokens/sec)
-    theoretical_token_speed = total_ram_bandwidth / (bytes_per_token / 1e9)
-    real_token_speed = theoretical_token_speed * efficiency_factor
-    
-    # Prompt processing speed (GPU-bound estimate)
-    prompt_speed = 50 * num_gpus  # tokens/sec
-    
-    # VRAM sufficiency check
-    kv_cache_per_token = 0.005  # GB (for 680B model)
-    kv_cache_total = context_length * kv_cache_per_token
-    weights_vram = (active_in_vram * 1e9 * bits_per_weight) / (8 * 1e9)  # GB
-    vram_required = kv_cache_total + weights_vram
-    
-    vram_warning = None
-    if vram_required > total_vram:
-        deficit = vram_required - total_vram
-        vram_warning = (f"⚠️ Insufficient VRAM! Need {vram_required:.1f}GB, "
-                       f"only {total_vram}GB available. Deficit: {deficit:.1f}GB")
+from dataclasses import dataclass
+from typing import List, Optional
 
-    return {
-        "total_price": total_price,
-        "ram_bandwidth": total_ram_bandwidth,
-        "token_gen_speed": real_token_speed,
-        "prompt_speed": prompt_speed,
-        "vram_warning": vram_warning,
-        "components": {
-            "gpu_count": num_gpus,
-            "total_vram": total_vram,
-            "vram_required": round(vram_required, 1)
+@dataclass
+class Motherboard:
+    name: str
+    price: float
+    ram_slots: int
+    pcie_slots: int
+
+@dataclass
+class RAM:
+    name: str
+    price: float
+    capacity_gb: float
+    bandwidth_per_stick: float  # GB/s
+
+@dataclass
+class GPU:
+    name: str
+    price: float
+    vram_gb: float
+
+@dataclass
+class LLM:
+    total_parameters: float  # in billions
+    active_parameters_per_token: float  # in billions
+    active_parameters_per_token_in_vram: float  # in billions
+    context_length: int  # tokens
+    bits_per_weight: int = 5
+    efficiency_factor: float = 0.5
+    kv_cache_per_ctxsq: float = 8e-9  # GB
+
+class PCBuild:
+    def __init__(self, motherboard: Optional[Motherboard] = None):
+        self.motherboard = motherboard
+        self.ram_sticks: List[RAM] = []
+        self.gpus: List[GPU] = []
+    
+    def select_motherboard(self, motherboard: Motherboard):
+        self.motherboard = motherboard
+        return self
+    
+    def fill(self, ram: RAM, gpu: GPU):
+        """Fill available slots with specified components"""
+        if not self.motherboard:
+            raise ValueError("Motherboard must be selected first")
+        
+        # Fill RAM slots
+        self.ram_sticks = [ram for _ in range(self.motherboard.ram_slots)]
+        
+        # Fill GPU slots (practical limit of 8 GPUs)
+        num_gpus = min(self.motherboard.pcie_slots, 8)
+        self.gpus = [gpu for _ in range(num_gpus)]
+        
+        return self
+    
+    def price(self) -> float:
+        """Calculate total build price"""
+        if not self.motherboard:
+            return 0
+            
+        motherboard_cost = self.motherboard.price
+        ram_cost = sum(ram.price for ram in self.ram_sticks)
+        gpu_cost = sum(gpu.price for gpu in self.gpus)
+        
+        return motherboard_cost + ram_cost + gpu_cost
+    
+    def performance(self, llm: LLM) -> dict:
+        """Calculate LLM performance metrics"""
+        if not self.motherboard:
+            return {}
+        
+        # RAM bandwidth
+        total_ram_bandwidth = sum(ram.bandwidth_per_stick for ram in self.ram_sticks)
+        
+        # GPU configuration
+        num_gpus = len(self.gpus)
+        total_vram = sum(gpu.vram_gb for gpu in self.gpus)
+        
+        # Token generation speed
+        active_in_ram = llm.active_parameters_per_token - llm.active_parameters_per_token_in_vram
+        bytes_per_token = (active_in_ram * 1e9 * llm.bits_per_weight) / 8
+        theoretical_token_speed = total_ram_bandwidth / (bytes_per_token / 1e9)
+        real_token_speed = theoretical_token_speed * llm.efficiency_factor
+        
+        # Prompt processing speed (GPU-bound estimate)
+        prompt_speed = 50 * num_gpus
+        
+        # VRAM sufficiency check
+        kv_cache_total = llm.context_length**2 * llm.kv_cache_per_ctxsq
+        weights_vram = (llm.active_parameters_per_token_in_vram * 1e9 * llm.bits_per_weight) / (8 * 1e9)
+        vram_required = kv_cache_total + weights_vram
+        
+        vram_warning = None
+        if vram_required > total_vram:
+            deficit = vram_required - total_vram
+            vram_warning = (f"⚠️ Insufficient VRAM! Need {vram_required:.1f}GB, "
+                          f"only {total_vram}GB available. Deficit: {deficit:.1f}GB")
+        
+        return {
+            "ram_bandwidth": total_ram_bandwidth,
+            "token_gen_speed": real_token_speed,
+            "prompt_speed": prompt_speed,
+            "vram_warning": vram_warning,
+            "components": {
+                "gpu_count": num_gpus,
+                "total_vram": total_vram,
+                "vram_required": round(vram_required, 1)
+            }
         }
-    }
+    
+    def processing_time(self, llm, prompt_length: int, generation_length: int):
+        perf = self.performance(llm)
+        return prompt_length / perf['prompt_speed'] + generation_length / perf['token_gen_speed']
 
-# Example usage for both motherboard configurations
-if __name__ == "__main__":
-    # Common parameters
-    params = {
-        "ram_stick_speed": 40,     # GB/s
-        "ram_stick_price": 300,     # $ (64GB stick)
-        "gpu_vram": 24,             # GB
-        "gpu_price": 1000,          # $
-        "active_in_vram": 15,       # billion params
-    }
-    
-    # Option 1: 8 RAM slots + 7 PCIe slots
-    opt1 = calculate_llm_performance(
-        motherboard_price=1100,
-        motherboard_ram_slots=8,
-        motherboard_pcie_slots=7,
-        **params
-    )
-    
-    # Option 2: 12 RAM slots + 4 PCIe slots
-    opt2 = calculate_llm_performance(
-        motherboard_price=800,
-        motherboard_ram_slots=12,
-        motherboard_pcie_slots=4,
-        **params
-    )
 
-    # Print results
-    print("Option 1 (8 RAM slots + 7 PCIe):")
-    print(f"  Total Price: ${opt1['total_price']}")
-    print(f"  RAM Bandwidth: {opt1['ram_bandwidth']} GB/s")
-    print(f"  Token Gen Speed: {opt1['token_gen_speed']:.1f} tokens/sec")
-    print(f"  Prompt Speed: {opt1['prompt_speed']} tokens/sec")
-    print(f"  GPUs: {opt1['components']['gpu_count']}x{params['gpu_vram']}GB")
-    print(f"  VRAM: {opt1['components']['total_vram']}GB (Requires {opt1['components']['vram_required']}GB)")
-    if opt1['vram_warning']:
-        print("  " + opt1['vram_warning'])
+# Component definitions
+motherboards = [
+    Motherboard("8 RAM slots + 7 PCIe", 1100, 8, 7),
+    Motherboard("12 RAM slots + 4 PCIe", 800, 12, 4)
+]
+
+ram_stick = RAM("64GB DDR5", 300, 64, 40)
+gpu_card = GPU("32GB GPU", 1000, 32)
+llm = LLM(680, 35, 15, 11000)
+
+# Active parameters in VRAM
+active_in_vram = 15  # billion params
+
+# Evaluate both configurations
+print("LLM Performance Comparison\n" + "="*50)
+
+for motherboard in motherboards:
+    build = PCBuild(motherboard)
+    build.fill(ram_stick, gpu_card)
     
-    print("\nOption 2 (12 RAM slots + 4 PCIe):")
-    print(f"  Total Price: ${opt2['total_price']}")
-    print(f"  RAM Bandwidth: {opt2['ram_bandwidth']} GB/s")
-    print(f"  Token Gen Speed: {opt2['token_gen_speed']:.1f} tokens/sec")
-    print(f"  Prompt Speed: {opt2['prompt_speed']} tokens/sec")
-    print(f"  GPUs: {opt2['components']['gpu_count']}x{params['gpu_vram']}GB")
-    print(f"  VRAM: {opt2['components']['total_vram']}GB (Requires {opt2['components']['vram_required']}GB)")
-    if opt2['vram_warning']:
-        print("  " + opt2['vram_warning'])
+    perf = build.performance(llm)
+    
+    print(f"\n{motherboard.name}:")
+    print(f"  Total Price: ${build.price()}")
+    print(f"  RAM Bandwidth: {perf['ram_bandwidth']} GB/s")
+    print(f"  Token Gen Speed: {perf['token_gen_speed']:.1f} tokens/sec")
+    print(f"  Prompt Speed: {perf['prompt_speed']} tokens/sec")
+    print(f"  GPUs: {perf['components']['gpu_count']}x{gpu_card.vram_gb}GB")
+    print(f"  VRAM: {perf['components']['total_vram']}GB (Requires {perf['components']['vram_required']}GB)")
+    if perf['vram_warning']:
+        print("  " + perf['vram_warning'])
+    else:
+        for prompt_length, generation_length in ((10000, 1000), (1000,1000), (1000,100), (1000,10000), (100,1000)):
+            t = build.processing_time(llm, prompt_length, generation_length)
+            print(f'Would take {t:0.2f} seconds to process {prompt_length} token long sequence and give {generation_length} token long answer.')
