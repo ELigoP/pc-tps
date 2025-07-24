@@ -29,7 +29,7 @@ class LLM:
     context_length: int  # tokens
     bits_per_weight: int = 5
     efficiency_factor: float = 0.5
-    kv_cache_per_ctxsq: float = 8e-9  # GB
+    kv_cache_and_activations_per_ctx: float = 0.005  # GB
 
 class PCBuild:
     def __init__(self, motherboard: Optional[Motherboard] = None):
@@ -88,7 +88,7 @@ class PCBuild:
         prompt_speed = 50 * num_gpus
         
         # VRAM sufficiency check
-        kv_cache_total = llm.context_length**2 * llm.kv_cache_per_ctxsq
+        kv_cache_total = llm.context_length * llm.kv_cache_and_activations_per_ctx
         weights_vram = (llm.active_parameters_per_token_in_vram * 1e9 * llm.bits_per_weight) / (8 * 1e9)
         vram_required = kv_cache_total + weights_vram
         
