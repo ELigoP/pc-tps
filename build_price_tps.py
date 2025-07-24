@@ -39,14 +39,15 @@ class LLM:
     kv_cache_and_activations_per_ctx: float = 0.005  # GB
 
 class PCBuild:
-    def __init__(self, motherboard: Optional[Motherboard] = None):
+    def __init__(
+        self,
+        motherboard: Optional[Motherboard] = None,
+        cpu: Optional[CPU] = None,
+    ):
         self.motherboard = motherboard
+        self.cpu = cpu
         self.ram_sticks: List[RAM] = []
         self.gpus: List[GPU] = []
-    
-    def select_motherboard(self, motherboard: Motherboard):
-        self.motherboard = motherboard
-        return self
     
     def fill(self, ram: RAM, gpu: GPU):
         """Fill available slots with specified components"""
@@ -73,7 +74,7 @@ class PCBuild:
         
         return motherboard_cost + ram_cost + gpu_cost
     
-    def performance(self, llm: LLM) -> dict:
+    def performance(self, llm: LLM, vram_full=True) -> dict:
         """Calculate LLM performance metrics"""
         if not self.motherboard:
             return {}
@@ -98,11 +99,12 @@ class PCBuild:
         kv_cache_total = llm.context_length * llm.kv_cache_and_activations_per_ctx
         weights_vram = (llm.active_parameters_per_token_in_vram * 1e9 * llm.bits_per_weight) / (8 * 1e9)
         vram_required = kv_cache_total + weights_vram
+        print(vram_required , kv_cache_total , weights_vram)
         
         vram_warning = None
         if vram_required > total_vram:
             deficit = vram_required - total_vram
-            vram_warning = (f"⚠️ Insufficient VRAM! Need {vram_required:.1f}GB, "
+            vram_warning = (f"Insufficient VRAM! Need {vram_required:.1f}GB, "
                           f"only {total_vram}GB available. Deficit: {deficit:.1f}GB")
         
         return {
@@ -124,12 +126,16 @@ class PCBuild:
 
 # Component definitions
 motherboards = [
+    # Motherboard("4 RAM channels + 4 PCIe", 1100, 4, 4),
     Motherboard("8 RAM slots + 7 PCIe", 1100, 8, 7),
     Motherboard("12 RAM slots + 4 PCIe", 800, 12, 4)
 ]
+# cpu = CPU('Threadripper 3970X', 700, 0.15)
+cpu = CPU('Epyc 9534', 1100, 0.32)
 
 ram_stick = RAM("64GB DDR5", 300, 64, 40)
-gpu_card = GPU("32GB GPU", 1000, 32)
+gpu_card = GPU("24GB GPU", 850, 32, 142)
+# gpu_card = GPU("32GB GPU", 1200, 32, 142)
 llm = LLM(680, 35, 15, 11000)
 
 # Active parameters in VRAM
@@ -139,7 +145,7 @@ active_in_vram = 15  # billion params
 print("LLM Performance Comparison\n" + "="*50)
 
 for motherboard in motherboards:
-    build = PCBuild(motherboard)
+    build = PCBuild(motherboard, cpu)
     build.fill(ram_stick, gpu_card)
     
     perf = build.performance(llm)
@@ -154,6 +160,7 @@ for motherboard in motherboards:
     if perf['vram_warning']:
         print("  " + perf['vram_warning'])
     else:
+        print(f'Would take:')
         for prompt_length, generation_length in ((10000, 1000), (1000,1000), (1000,100), (1000,10000), (100,1000)):
             t = build.processing_time(llm, prompt_length, generation_length)
-            print(f'Would take {t:0.2f} seconds to process {prompt_length} token long sequence and give {generation_length} token long answer.')
+            print(f'  {t:0.2f} seconds for {prompt_length} sequence and generate {generation_length} .')
