@@ -20,6 +20,13 @@ class GPU:
     name: str
     price: float
     vram_gb: float
+    tflops: float
+
+@dataclass
+class CPU:
+    name: str
+    price: float
+    tflops: float
 
 @dataclass
 class LLM:
