@@ -263,7 +263,8 @@ class PCBuild:
             else 0
         )
 
-        ttft = t_gpu_work_prefill + t_ram_work_prefill + t_comm_prefill
+        ttft = max(t_gpu_work_prefill, t_ram_work_prefill) + t_comm_prefill
+        # ttft = t_gpu_work_prefill + t_ram_work_prefill + t_comm_prefill
 
         # --- 4. Decode Phase (TPOT) Calculation ---
 
