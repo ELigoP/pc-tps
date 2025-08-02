@@ -108,7 +108,7 @@ class PCBuild:
         eff = llm.efficiency_factor
         gpu_tflops_single = gpu.tflops * eff
         gpu_tflops_total = num_gpus * gpu_tflops_single
-        gpu_mem_bw_total = num_gpus * gpu.memory_bw_gbps * eff
+        # gpu_mem_bw_total = num_gpus * gpu.memory_bw_gbps * eff
         cpu_tflops = self.cpu.tflops * eff
         ram_bw_total = len(self.ram_sticks) * ram.memory_bw_per_module_gbps * eff
 
@@ -226,8 +226,6 @@ class PCBuild:
         tokens_per_sec = 1.0 / tpot if tpot > 0 else float("inf")
 
         return {
-            "llm_name": llm.name,
-            "context_length": context_length,
             "total_vram_gb": vram_total_bytes / GB_to_B,
             "total_ram_gb": ram_total_bytes / GB_to_B,
             "kv_cache_size_gb": kv_cache_bytes / GB_to_B,
@@ -258,9 +256,9 @@ class PCBuild:
         }
 
 
-def print_round_dict_values(d):
-    for k, v in d.items():
-        print(f"{k}: {round(v)}")
+# def print_round_dict_values(d):
+#     for k, v in d.items():
+#         print(f"{k}: {round(v)}")
 
 
 # --- Main Execution Block ---
@@ -283,52 +281,57 @@ if __name__ == "__main__":
         name="4-Slot Old Workstation", price=350, ram_slots=3, pcie_slots=4, pcie_gen=3
     )
     mb_7_gpu = Motherboard(
-        name="7-Slot Workstation", price=1400, ram_slots=8, pcie_slots=7
+        name="7-Slot Workstation", price=1400, ram_slots=8, pcie_slots=6
     )
     mb_4_gpu = Motherboard(
         name="4-Slot Workstation", price=1000, ram_slots=12, pcie_slots=4
     )
 
     # Define LLMs
-    mixtral_8x22b = LLM(
-        name="Mixtral 8x22B",
-        total_parameters=141,
-        active_parameters_per_token=39,
-        always_active_parameters_per_token=5.0,  # Derived
-        layers=56,
-        hidden_dim=6144,
-    )
+    # mixtral_8x22b = LLM(
+    #     name="Mixtral 8x22B",
+    #     total_parameters=141,
+    #     active_parameters_per_token=39,
+    #     always_active_parameters_per_token=5.0,  # Derived
+    #     layers=56,
+    #     hidden_dim=6144,
+    # )
 
-    qwen3_235b = LLM(
+    qwen3_235b_params = dict(
         name="Qwen3 235B-A22B",
         total_parameters=235,
         active_parameters_per_token=22,
         always_active_parameters_per_token=7.8,  # Derived
         layers=94,
         hidden_dim=4096,
-        bits_per_weight=3.5,
     )
 
     deepseek_r1_params = dict(
+        name="DeepSeek R1",
         total_parameters=671,
         active_parameters_per_token=37,
         always_active_parameters_per_token=16.55,  # Derived
         layers=61,
         hidden_dim=7168,
     )
-    models = [qwen3_235b]
-    for bpw in (
-        # 3,
-        # 5,
-        # 7,
-    ):
-        models.append(
-            LLM(
-                **deepseek_r1_params,
-                name=f"DeepSeek R1 {bpw}bit",
-                bits_per_weight=bpw,
+    models: List[LLM] = []
+    for _model_params in [qwen3_235b_params, deepseek_r1_params]:
+        for bpw in (
+            2.6,
+            3.5,
+            5,
+            8,
+        ):
+            if _model_params["name"].startswith("Qwen") and bpw < 3:
+                continue
+            model_params = _model_params.copy()
+            model_params["name"] = f"{_model_params['name']} {bpw}b"
+            models.append(
+                LLM(
+                    **model_params,
+                    bits_per_weight=bpw,
+                )
             )
-        )
 
     # Create PC Builds
     builds: List[PCBuild] = []
@@ -340,38 +343,39 @@ if __name__ == "__main__":
         builds.append(PCBuild(motherboard, cpu).fill(ram, gpu))
 
     # Run Performance Analysis
-    print(
-        f"{'LLM':<20} "
-        f"| {'TTFT (s)':<15} "
-        f"/ {'Compute (ms)':<15} "
-        f"/ {'Memory (ms)':<15} "
-        f"/ {'Communication (ms)':<20} "
-        f"| {'TPPT (tok/s)':<15} "
-        f"| {'TPOT (tok/s)':<15} "
+    header_line = (
+        f"{'Build':<25} "
+        f"| {'LLM':<20} "
+        f"| {'CTX':<5} "
+        # f"| {'TTFT (s)':<15} "
+        # f"/ {'Compute (ms)':<15} "
+        # f"/ {'Memory (ms)':<15} "
+        # f"/ {'Communication (ms)':<20} "
+        f"| {'TPPT (tps)':<10} "
+        f"| {'TPOT (tps)':<10} "
     )
-    print("-" * 145)
+    print(header_line)
+    print("-" * len(header_line))
 
-    for build in builds:
-        print(build)
-        for model in models:
-            for context_length in (16, 512, 16384):
-                print(f"CTX={context_length}")
+    for model in models:
+        for context_length in (
+            # 16,
+            512,
+            # 16384,
+        ):
+            for build in builds:
                 results = build.performance(
                     llm=model, context_length=context_length, kv_cache_bpw=2
                 )
 
                 print(
-                    f"{results['llm_name']:<20} "
-                    f"| {results['ttft_s']:<15.2f} "
-                    f"/ {results['breakdown_ttft_ms']['compute']:<15.2f} "
-                    f"/ {results['breakdown_ttft_ms']['memory']:<15.2f} "
-                    f"/ {results['breakdown_ttft_ms']['communication']:<20.2f} "
-                    f"| {results['tppt_s']:<15.2f} "
-                    f"| {results['tokens_per_second']:<15.2f}"
+                    f"{build.motherboard.name:<25} "
+                    f"| {model.name:<20} "
+                    f"| {context_length:<5} "
+                    # f"| {results['ttft_s']:<15.2f} "
+                    # f"/ {results['breakdown_ttft_ms']['compute']:<15.2f} "
+                    # f"/ {results['breakdown_ttft_ms']['memory']:<15.2f} "
+                    # f"/ {results['breakdown_ttft_ms']['communication']:<20.2f} "
+                    f"| {results['tppt_s']:<10.2f} "
+                    f"| {results['tokens_per_second']:<10.2f}"
                 )
-                # for k in (
-                #     "breakdown_ttft_ms",
-                #     "breakdown_tpot_ms",
-                # ):
-                #     print(f"----{k.upper().replace('_',' ')}:")
-                #     print_round_dict_values(results[k])
