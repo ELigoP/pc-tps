@@ -255,6 +255,11 @@ class PCBuild:
         }
 
 
+def print_round_dict_values(d):
+    for k, v in d.items():
+        print(f"{k}: {round(v)}")
+
+
 # --- Main Execution Block ---
 
 if __name__ == "__main__":
@@ -272,7 +277,7 @@ if __name__ == "__main__":
     )
 
     old_mb_4_gpu = Motherboard(
-        name="4-Slot Old Workstation", price=350, ram_slots=3, pcie_slots=4
+        name="4-Slot Old Workstation", price=350, ram_slots=3, pcie_slots=4, pcie_gen=3
     )
     mb_7_gpu = Motherboard(
         name="7-Slot Workstation", price=1400, ram_slots=8, pcie_slots=7
@@ -298,6 +303,7 @@ if __name__ == "__main__":
         always_active_parameters_per_token=7.8,  # Derived
         layers=94,
         hidden_dim=4096,
+        bits_per_weight=3.5,
     )
 
     deepseek_r1_params = dict(
@@ -307,8 +313,12 @@ if __name__ == "__main__":
         layers=61,
         hidden_dim=7168,
     )
-    models = []
-    for bpw in (3, 5, 7):
+    models = [qwen3_235b]
+    for bpw in (
+        # 3,
+        # 5,
+        # 7,
+    ):
         models.append(
             LLM(
                 **deepseek_r1_params,
@@ -328,17 +338,37 @@ if __name__ == "__main__":
 
     # Run Performance Analysis
     print(
-        f"{'LLM':<20} | {'Config':<15} | {'VRAM (GB)':<10} | {'RAM (GB)':<10} | {'TTFT 16k (s)':<15} | {'TPPT (tok/s)':<15} | {'TPOT (tok/s)':<15}"
+        f"{'LLM':<20} "
+        f"| {'TTFT (s)':<15} "
+        f"/ {'Compute (ms)':<15} "
+        f"/ {'Memory (ms)':<15} "
+        f"/ {'Communication (ms)':<20} "
+        f"| {'TPPT (tok/s)':<15} "
+        f"| {'TPOT (tok/s)':<15} "
     )
-    print("-" * 110)
+    print("-" * 145)
 
     for build in builds:
         print(build)
         for model in models:
-            config_name = f"{len(build.gpus)} GPUs, {len(build.ram_sticks)} RAM"
-            results = build.performance(llm=model, context_length=16384, kv_cache_bpw=2)
+            for context_length in (16, 512, 16384):
+                print(f"CTX={context_length}")
+                results = build.performance(
+                    llm=model, context_length=context_length, kv_cache_bpw=2
+                )
 
-            print(
-                f"{results['llm_name']:<20} | {config_name:<15} | {results['total_vram_gb']:<10.1f} | {results['total_ram_gb']:<10.1f} | {results['ttft_s']:<15.2f} | {results['tppt_s']:<15.2f} | {results['tokens_per_second']:<15.2f}"
-            )
-            print(results["breakdown_tpot_ms"])
+                print(
+                    f"{results['llm_name']:<20} "
+                    f"| {results['ttft_s']:<15.2f} "
+                    f"/ {results['breakdown_ttft_ms']['compute']:<15.2f} "
+                    f"/ {results['breakdown_ttft_ms']['memory']:<15.2f} "
+                    f"/ {results['breakdown_ttft_ms']['communication']:<20.2f} "
+                    f"| {results['tppt_s']:<15.2f} "
+                    f"| {results['tokens_per_second']:<15.2f}"
+                )
+                # for k in (
+                #     "breakdown_ttft_ms",
+                #     "breakdown_tpot_ms",
+                # ):
+                #     print(f"----{k.upper().replace('_',' ')}:")
+                #     print_round_dict_values(results[k])
