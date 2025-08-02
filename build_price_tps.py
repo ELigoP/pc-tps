@@ -64,7 +64,7 @@ class PCBuild:
         self.gpus: List[GPU] = []
 
     def __str__(self):
-        return f"{len(self.gpus)}x{self.gpus[0].vram_gb}GB GPUs, {sum((stick.capacity_gb for stick in self.ram_sticks))}GB RAM"
+        return f"{len(self.gpus)}x{self.gpus[0].vram_gb}GB GPUs, {sum((stick.capacity_gb for stick in self.ram_sticks))}GB RAM ({self.motherboard.name})"
 
     def fill(self, ram: RAM, gpu: GPU):
         """Fill available slots with specified components"""
