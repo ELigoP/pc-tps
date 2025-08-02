@@ -105,7 +105,8 @@ class PCBuild:
 
         # Effective (real-world) performance after applying efficiency factor
         eff = llm.efficiency_factor
-        gpu_tflops_total = num_gpus * gpu.tflops * eff
+        gpu_tflops_single = gpu.tflops * eff
+        gpu_tflops_total = num_gpus * gpu_tflops_single
         gpu_mem_bw_total = num_gpus * gpu.memory_bw_gbps * eff
         cpu_tflops = self.cpu.tflops * eff
         ram_bw_total = len(self.ram_sticks) * ram.memory_bw_per_module_gbps * eff
@@ -119,6 +120,7 @@ class PCBuild:
         vram_total_bytes = num_gpus * gpu.vram_gb * GB_to_B
         ram_total_bytes = len(self.ram_sticks) * ram.capacity_gb * GB_to_B
         gpu_flops_per_s = gpu_tflops_total * TFLOPs_to_FLOPs
+        gpu_flops_single_per_s = gpu_tflops_single * TFLOPs_to_FLOPs
         gpu_bw_bytes_per_s = gpu.memory_bw_gbps * GB_to_B * eff
         pcie_bw_bytes_per_s = pcie_bw_gbps * GB_to_B
         ram_bw_bytes_per_s = ram_bw_total * GB_to_B
@@ -161,13 +163,17 @@ class PCBuild:
         flops_parametric = 2 * llm.active_parameters_per_token * 1e9 * context_length
         flops_attention = 2 * llm.layers * llm.hidden_dim * (context_length**2)
         total_prefill_flops = flops_parametric + flops_attention
-        t_compute_prefill = total_prefill_flops / gpu_flops_per_s
+        t_compute_prefill = total_prefill_flops / gpu_flops_single_per_s
 
         # Memory Time
-        # Time to load active weights from VRAM (parallel across GPUs) and RAM (sequential over PCIe)
-        t_memory_prefill = (A_gpu_bytes / (num_gpus * gpu_bw_bytes_per_s)) + (
-            A_cpu_bytes / pcie_bw_bytes_per_s
-        )
+        # Time to load active weights from VRAM (sequential across GPUs) and RAM (sequential over PCIe)
+        t_memory_prefill = (
+            A_gpu_bytes
+            / (
+                # num_gpus *  # if tensor parallel
+                gpu_bw_bytes_per_s
+            )
+        ) + (A_cpu_bytes / pcie_bw_bytes_per_s)
 
         # Communication Time (Pipeline Parallelism)
         activation_size_bytes = llm.hidden_dim * context_length * bytes_per_weight
@@ -188,9 +194,21 @@ class PCBuild:
         # Memory Time (Dominant Factor)
         # Read active weights AND the entire KV cache for each token
         t_memory_decode = (
-            (A_gpu_bytes / (num_gpus * gpu_bw_bytes_per_s))
+            (
+                A_gpu_bytes
+                / (
+                    # num_gpus * # if TP
+                    gpu_bw_bytes_per_s
+                )
+            )
             + (A_cpu_bytes / pcie_bw_bytes_per_s)
-            + (kv_on_gpu / (num_gpus * gpu_bw_bytes_per_s))
+            + (
+                kv_on_gpu
+                / (
+                    # num_gpus * # if TP
+                    gpu_bw_bytes_per_s
+                )
+            )
         )
 
         # Communication Time
@@ -216,10 +234,19 @@ class PCBuild:
             "tppt_s": context_length / ttft,
             "tpot_s": tpot,
             "tokens_per_second": tokens_per_sec,
+            "breakdown_ttft_ms": {
+                "compute": t_compute_prefill * 1000,
+                "memory": t_memory_prefill * 1000,
+                "communication": t_comm_prefill * 1000,
+            },
             "breakdown_tpot_ms": {
                 "compute": t_compute_decode * 1000,
                 "memory_vram": (
-                    (A_gpu_bytes + kv_on_gpu) / (num_gpus * gpu_bw_bytes_per_s)
+                    (A_gpu_bytes + kv_on_gpu)
+                    / (
+                        # num_gpus *  # if tensor parallel
+                        gpu_bw_bytes_per_s
+                    )
                 )
                 * 1000,
                 "memory_pcie": (A_cpu_bytes / pcie_bw_bytes_per_s) * 1000,
