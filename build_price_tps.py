@@ -147,18 +147,18 @@ class PCBuild:
 
         # Place Always-Active Parameters
         s_on_gpu = min(S_bytes, vram_rem)
-        s_on_cpu = S_bytes - s_on_gpu
+        s_on_ram = S_bytes - s_on_gpu
         vram_rem -= s_on_gpu
 
         # Place Expert Parameters
         p_exp_on_gpu = min(P_exp_bytes, vram_rem)
-        p_exp_on_cpu = P_exp_bytes - p_exp_on_gpu
+        p_exp_on_ram = P_exp_bytes - p_exp_on_gpu
 
         # Determine Active Parameter Distribution
         alpha_gpu = p_exp_on_gpu / P_exp_bytes if P_exp_bytes > 0 else 0
 
         A_gpu_bytes = s_on_gpu + (A_bytes - S_bytes) * alpha_gpu
-        A_cpu_bytes = s_on_cpu + (A_bytes - S_bytes) * (1 - alpha_gpu)
+        A_ram_bytes = s_on_ram + (A_bytes - S_bytes) * (1 - alpha_gpu)
 
         # --- 3. Prefill Phase (TTFT) Calculation ---
 
@@ -176,7 +176,7 @@ class PCBuild:
                 # num_gpus *  # if tensor parallel
                 gpu_bw_bytes_per_s
             )
-        ) + (A_cpu_bytes / pcie_bw_bytes_per_s)
+        ) + context_length * (A_cpu_bytes / pcie_bw_bytes_per_s)
 
         # Communication Time (Pipeline Parallelism)
         activation_size_bytes = llm.hidden_dim * context_length * bytes_per_weight
