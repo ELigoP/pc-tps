@@ -176,7 +176,7 @@ class PCBuild:
                 # num_gpus *  # if tensor parallel
                 gpu_bw_bytes_per_s
             )
-        ) + context_length * (A_cpu_bytes / pcie_bw_bytes_per_s)
+        ) + context_length * (A_ram_bytes / pcie_bw_bytes_per_s)
 
         # Communication Time (Pipeline Parallelism)
         activation_size_bytes = llm.hidden_dim * context_length * bytes_per_weight
@@ -204,7 +204,7 @@ class PCBuild:
                     gpu_bw_bytes_per_s
                 )
             )
-            + (A_cpu_bytes / pcie_bw_bytes_per_s)
+            + (A_ram_bytes / pcie_bw_bytes_per_s)
             + (
                 kv_on_gpu
                 / (
@@ -231,8 +231,8 @@ class PCBuild:
             "total_vram_gb": vram_total_bytes / GB_to_B,
             "total_ram_gb": ram_total_bytes / GB_to_B,
             "kv_cache_size_gb": kv_cache_bytes / GB_to_B,
-            "model_on_cpu_gb": (s_on_cpu + p_exp_on_cpu) / GB_to_B,
-            "active_params_on_cpu_gb": A_cpu_bytes / GB_to_B,
+            "model_on_ram_gb": (s_on_ram + p_exp_on_ram) / GB_to_B,
+            "active_params_on_ram_gb": A_ram_bytes / GB_to_B,
             "ttft_s": ttft,
             "tppt_s": context_length / ttft,
             "tpot_s": tpot,
@@ -252,7 +252,7 @@ class PCBuild:
                     )
                 )
                 * 1000,
-                "memory_pcie": (A_cpu_bytes / pcie_bw_bytes_per_s) * 1000,
+                "memory_pcie": (A_ram_bytes / pcie_bw_bytes_per_s) * 1000,
                 "communication": t_comm_decode * 1000,
             },
         }
