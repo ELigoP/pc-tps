@@ -29,6 +29,7 @@ class GPU(Buyable):
     vram_gb: float
     memory_bw_gbps: float
     tflops: float
+    pcie_gen: int = 4
 
 
 @dataclass
@@ -111,7 +112,9 @@ class PCBuild:
         cpu_tflops = self.cpu.tflops * eff
         ram_bw_total = len(self.ram_sticks) * ram.memory_bw_per_module_gbps * eff
 
-        pcie_bw_gbps = {5: 64, 4: 32, 3: 16}.get(self.motherboard.pcie_gen, 64) * eff
+        pcie_bw_gbps = {5: 64, 4: 32, 3: 16}.get(
+            min(self.motherboard.pcie_gen, gpu.pcie_gen), 64
+        ) * eff
 
         # Convert to base units (Bytes, FLOPs/s)
         GB_to_B = 10**9
