@@ -173,10 +173,14 @@ class PCBuild:
         aa_on_ram = AA_bytes - aa_on_gpu
         vram_rem -= aa_on_gpu
         model_on_vram_bytes = min(vram_total_bytes, P_bytes)
-
-        p_exp_on_gpu = min(P_exp_bytes, vram_rem)
-        p_exp_on_ram = P_exp_bytes - p_exp_on_gpu
-        model_on_ram_bytes = aa_on_ram + p_exp_on_ram
+        if model_on_vram_bytes < vram_total_bytes:
+            p_exp_on_gpu = P_exp_bytes
+            p_exp_on_ram = 0
+            model_on_ram_bytes = 0
+        else:
+            p_exp_on_gpu = min(P_exp_bytes, vram_rem)
+            p_exp_on_ram = P_exp_bytes - p_exp_on_gpu
+            model_on_ram_bytes = aa_on_ram + p_exp_on_ram
 
         alpha_gpu = p_exp_on_gpu / P_exp_bytes if P_exp_bytes > 0 else 0
         A_gpu_bytes = aa_on_gpu + (A_bytes - AA_bytes) * alpha_gpu
