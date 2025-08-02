@@ -1,50 +1,52 @@
 from dataclasses import dataclass
 from typing import List, Optional
+import pandas as pd
+
+
+# Data Classes (as provided in the prompt)
+@dataclass
+class Buyable:
+    name: str
+    price: float
 
 
 @dataclass
-class Motherboard:
-    name: str
-    price: float
+class Motherboard(Buyable):
     ram_slots: int
     pcie_slots: int
     pcie_gen: int = 5
 
 
 @dataclass
-class RAM:
-    name: str
-    price: float
+class RAM(Buyable):
     capacity_gb: float
-    bandwidth_per_stick: float  # GB/s
+    memory_bw_per_module_gbps: float
 
 
 @dataclass
-class GPU:
-    name: str
-    price: float
+class GPU(Buyable):
     vram_gb: float
-    memory_bw: float
+    memory_bw_gbps: float
     tflops: float
 
 
 @dataclass
-class CPU:
-    name: str
-    price: float
+class CPU(Buyable):
     tflops: float
 
 
 @dataclass
 class LLM:
+    name: str
     total_parameters: float  # in billions
     active_parameters_per_token: float  # in billions
-    shared_parameters_per_token: float  # in billions
-    activations_size_per_token: float  # GB
-    kvcache_size_per_user_token: float  # GB
-    hidden_dim: int
-    bits_per_weight: int = 5
-    efficiency_factor: float = 0.5
+    # kvcache_size_per_user_token is estimated as 2 * num_layers * hidden_dim
+    # We will use a simplified value in GB for 1 bit precision
+    kvcache_size_per_user_token_gb: float  # GB per token at 1-bit precision
+    bits_per_weight: int = (
+        5  # Default to 5-bit quantization (4-bit on largest layers and 8-, 16- and 32- bits on accumulation layers)
+    )
+    efficiency_factor: float = 0.6  # Practical efficiency of GPU FLOPs
 
 
 class PCBuild:
@@ -58,39 +60,14 @@ class PCBuild:
         self.ram_sticks: List[RAM] = []
         self.gpus: List[GPU] = []
 
-    @property
-    def pcie_bw(self) -> int:
-        ASSUMED_N_PCIE_LANES = 8
-        return (
-            2 ** (self.motherboard.pcie_gen - 1) * ASSUMED_N_PCIE_LANES
-            if self.motherboard
-            else None
-        )
-
     def fill(self, ram: RAM, gpu: GPU):
         """Fill available slots with specified components"""
         if not self.motherboard:
             raise ValueError("Motherboard must be selected first")
 
-        # Fill RAM slots
         self.ram_sticks = [ram for _ in range(self.motherboard.ram_slots)]
-
-        # Fill GPU slots (practical limit of 8 GPUs)
-        num_gpus = self.motherboard.pcie_slots
-        self.gpus = [gpu for _ in range(num_gpus)]
-
+        self.gpus = [gpu for _ in range(self.motherboard.pcie_slots)]
         return self
-
-    def price(self) -> float:
-        """Calculate total build price"""
-        if not self.motherboard:
-            return 0
-
-        motherboard_cost = self.motherboard.price
-        ram_cost = sum(ram.price for ram in self.ram_sticks)
-        gpu_cost = sum(gpu.price for gpu in self.gpus)
-
-        return motherboard_cost + ram_cost + gpu_cost
 
     def price(self) -> float:
         """Calculate total build price"""
@@ -101,204 +78,173 @@ class PCBuild:
         cpu_cost = self.cpu.price
         ram_cost = sum(ram.price for ram in self.ram_sticks)
         gpu_cost = sum(gpu.price for gpu in self.gpus)
-
         return motherboard_cost + cpu_cost + ram_cost + gpu_cost
 
     def performance(
         self,
         llm: LLM,
         context_length: int,
-        parallel_requests: int = 1,
-        cache_bpw=1,
+        kv_cache_bpw: int = 8,  # Use 8-bit (1 byte) for KV cache by default
     ) -> dict:
-        """Calculate LLM performance metrics based on hardware."""
-        if not self.motherboard or not self.gpus:
-            return {}
+        """Calculate LLM performance metrics based on PC build hardware and LLM model."""
 
-        # --- System-wide hardware stats ---
+        if not self.gpus or not self.ram_sticks or not self.motherboard or not self.cpu:
+            return {"error": "Incomplete PC build."}
+
+        # 1. System Parameters
         num_gpus = len(self.gpus)
-        total_vram_gb = sum(gpu.vram_gb for gpu in self.gpus)
-        total_gpu_tflops = sum(gpu.tflops for gpu in self.gpus)
-        total_memory_bw = sum(gpu.memory_bw for gpu in self.gpus)
+        gpu = self.gpus[0]
+        ram = self.ram_sticks[0]
 
-        # --- VRAM & Memory Allocation ---
-        activations_required_gb = context_length * llm.activations_size_per_token
-        kv_cache_required_gb = (
-            context_length
-            * parallel_requests
-            * llm.kvcache_size_per_user_token
-            * (cache_bpw / 8)
-        )
-        model_weights_gb = llm.total_parameters * (llm.bits_per_weight / 8)
-        # at least that much should be placed in VRAM for better performance
-        shared_weights_gb = llm.shared_parameters_per_token * (llm.bits_per_weight / 8)
-        required_memory_gb = (
-            model_weights_gb + activations_required_gb + kv_cache_required_gb
-        )
+        total_vram_gb = num_gpus * gpu.vram_gb
+        total_gpu_bw_gbps = num_gpus * gpu.memory_bw_gbps
+        total_gpu_tflops = num_gpus * gpu.tflops
 
-        # Determine how weights are split between VRAM and system RAM
-        available_vram_for_weights = total_vram_gb - kv_cache_required_gb
-        weights_in_vram_gb = min(model_weights_gb, available_vram_for_weights)
-        offloaded_to_ram_gb = model_weights_gb - weights_in_vram_gb
+        total_ram_gb = len(self.ram_sticks) * ram.capacity_gb
+        total_ram_bw_gbps = len(self.ram_sticks) * ram.memory_bw_per_module_gbps
 
-        vram_warning = None
-        if total_vram_gb < kv_cache_required_gb:
-            vram_warning = (
-                f"Insufficient VRAM for KV Cache alone! "
-                f"Need {kv_cache_required_gb:.1f}GB, "
-                f"have {total_vram_gb:.1f}GB."
-            )
-        elif total_vram_gb < kv_cache_required_gb + shared_weights_gb:
-            vram_warning = (
-                f"VRAM is not enough for all shared experts."
-                f"Offloading {offloaded_to_ram_gb:.1f}GB to system RAM."
-            )
-        elif total_vram_gb < required_memory_gb:
-            vram_warning = (
-                f"VRAM is not enough for the model."
-                f"Offloading {offloaded_to_ram_gb:.1f}GB to system RAM."
-            )
+        # PCIe bandwidth in GB/s per x16 slot
+        pcie_gen_bw = {4: 32, 5: 64}
+        # Effective PCIe BW is the total bandwidth available for CPU-GPU communication
+        # It's limited by the number of GPUs communicating simultaneously.
+        pcie_bw_gbps = pcie_gen_bw.get(self.motherboard.pcie_gen, 64) * num_gpus
 
-        # --- 1. PROMPT PROCESSING SPEED (TTFT-related) ---
-        # Time to process one token in the initial prompt (prefill stage)
-        # This involves compute, memory loads, and inter-GPU communication.
-
-        # a) Compute time for the whole model
-        # assuming same GPU
-        # assuming sequential data transfer from previous to next GPUs
-        # + proportion of experts offloading to CPU
-        prefill_flops_per_token = 2 * llm.total_parameters * 1e9
-        time_prefill_compute = prefill_flops_per_token / (
-            self.gpus[0].tflops * 1e12 * llm.efficiency_factor
+        # 2. Model & Cache Sizes (in GB)
+        P_gb = llm.total_parameters * llm.bits_per_weight / 8
+        A_gb = llm.active_parameters_per_token * llm.bits_per_weight / 8
+        kv_cache_gb = (
+            context_length * llm.kvcache_size_per_user_token_gb * kv_cache_bpw / 8
         )
 
-        # b) Memory load time (loading all weights for one forward pass)
-        time_prefill_hbm_load = weights_in_vram_gb / self.gpus[0].tflops
-        time_prefill_pcie_load = offloaded_to_ram_gb / self.pcie_bw
+        # 3. Weight Distribution
+        if kv_cache_gb >= total_vram_gb:
+            return {
+                "error": f"KV cache ({kv_cache_gb:.1f} GB) exceeds total VRAM ({total_vram_gb:.1f} GB)."
+            }
 
-        # c) Communication overhead (simplified All-Reduce for Tensor Parallelism)
-        # Assuming batch size of 1 for this calculation.
-        bytes_to_communicate = (
-            2 * (num_gpus - 1) * llm.hidden_dim * 2
-        )  # 2 bytes for FP16
-        time_prefill_comm = (
-            bytes_to_communicate / (self.pcie_bw * 1e9) if num_gpus > 1 else 0
+        vram_available_for_weights = total_vram_gb - kv_cache_gb
+        weights_on_gpu_gb = min(P_gb, vram_available_for_weights)
+        weights_on_cpu_gb = P_gb - weights_on_gpu_gb
+
+        if weights_on_cpu_gb > total_ram_gb:
+            return {
+                "error": f"Offloaded weights ({weights_on_cpu_gb:.1f} GB) exceeds total RAM ({total_ram_gb:.1f} GB)."
+            }
+
+        if P_gb == 0:  # Avoid division by zero
+            return {"error": "Total parameters cannot be zero."}
+
+        active_weights_on_gpu_gb = A_gb * (weights_on_gpu_gb / P_gb)
+        active_weights_on_cpu_gb = A_gb * (weights_on_cpu_gb / P_gb)
+
+        # Communication bottleneck for CPU-held weights is the minimum of RAM or PCIe bandwidth
+        comm_bottleneck_bw_gbps = min(total_ram_bw_gbps, pcie_bw_gbps)
+
+        # --- Time to First Token (TTFT) / Prompt Processing ---
+        # Compute time for the entire prompt
+        time_compute_prefill = (
+            2 * llm.active_parameters_per_token * 1e12 * context_length
+        ) / (total_gpu_tflops * 1e12 * llm.efficiency_factor)
+
+        # Memory time to load all active weights once
+        time_memory_prefill = (active_weights_on_gpu_gb / total_gpu_bw_gbps) + (
+            active_weights_on_cpu_gb / comm_bottleneck_bw_gbps
         )
 
-        time_per_prompt_token = (
-            time_prefill_compute
-            + time_prefill_hbm_load
-            + time_prefill_pcie_load
-            + time_prefill_comm
-        )
-        prompt_speed_tps = 1 / time_per_prompt_token if time_per_prompt_token > 0 else 0
+        ttft = time_compute_prefill + time_memory_prefill
+        prompt_processing_speed = context_length / ttft if ttft > 0 else float("inf")
 
-        # --- 2. TOKEN GENERATION SPEED (TPOT-related) ---
-        # Time to generate one new token (decode stage for MoE)
-        # This is dominated by loading active params (experts) from RAM and compute.
+        # --- Time Per Output Token (TPOT) / Token Generation ---
+        # This is memory-bound: read active weights + entire KV cache for each token
+        time_decode_memory_gpu = (
+            active_weights_on_gpu_gb + kv_cache_gb
+        ) / total_gpu_bw_gbps
+        time_decode_memory_cpu = active_weights_on_cpu_gb / comm_bottleneck_bw_gbps
 
-        # For MoE, we assume only active parameters are in VRAM, the rest must be fetched.
-        active_params_in_vram_b = (
-            model_weights_gb
-            / (model_weights_gb + offloaded_to_ram_gb)
-            * llm.active_parameters_per_token
-            if (model_weights_gb + offloaded_to_ram_gb) > 0
-            else 0
-        )
-        active_params_in_ram_b = (
-            llm.active_parameters_per_token - active_params_in_vram_b
-        )
-
-        # a) Time to load the required 'expert' weights from offloaded RAM
-        bytes_from_ram_per_token = active_params_in_ram_b * 1e9 * bytes_per_param
-        time_decode_pcie_load = (
-            bytes_from_ram_per_token / (self.pcie_bw * 1e9)
-            if offloaded_to_ram_gb > 0
-            else 0
-        )
-
-        # b) Compute time for the active parameters
-        decode_flops_per_token = 2 * llm.active_parameters_per_token * 1e9
-        time_decode_compute = decode_flops_per_token / (
-            total_gpu_tflops * 1e12 * llm.efficiency_factor
-        )
-
-        # c) Communication overhead (same as prefill for simplicity)
-        time_decode_comm = time_prefill_comm
-
-        time_per_output_token = (
-            time_decode_pcie_load + time_decode_compute + time_decode_comm
-        )
-        gen_speed_tps = 1 / time_per_output_token if time_per_output_token > 0 else 0
+        tpot = time_decode_memory_gpu + time_decode_memory_cpu
+        token_generation_speed = 1 / tpot if tpot > 0 else float("inf")
 
         return {
-            "prompt_speed_tps": prompt_speed_tps,
-            "gen_speed_tps": gen_speed_tps,
-            "vram_warning": vram_warning,
-            "required_memory_gb": round(required_memory_gb, 1),
-            "offloaded_to_ram_gb": round(offloaded_to_ram_gb, 1),
+            "Prompt Processing (tokens/s)": round(prompt_processing_speed, 2),
+            "Token Generation (tokens/s)": round(token_generation_speed, 2),
+            "TTFT (s)": round(ttft, 2),
+            "TPOT (s)": round(tpot, 2),
+            "Weights on GPU (%)": round(100 * weights_on_gpu_gb / P_gb, 1),
+            "KV Cache (GB)": round(kv_cache_gb, 1),
         }
 
 
-# Component definitions
-motherboards = [
-    # Motherboard("4 RAM channels + 4 PCIe", 1100, 4, 4),
-    Motherboard("8 RAM slots + 7 PCIe", 1100, 8, 7),
-    Motherboard("12 RAM slots + 4 PCIe", 800, 12, 4),
-]
-# cpu = CPU('Threadripper 3970X', 700, 0.15)
-cpu = CPU("Epyc 9534", 1100, 0.32)
-
-ram_stick = RAM("64GB DDR5", 300, 64, 40)
-gpu_card = GPU("RTX 3090", 850, 32, 850, 32)
-# gpu_card = GPU("RTX 5090", 2400, 32, 1790, 142)
-llm = LLM(
-    680,
-    35,
-    15,
-    18.83 / 131072,
-    16.37 / 2 / 131072,
-    18432,  # 7168,
-    5,
-    0.7,
-)
-
-# Active parameters in VRAM
-active_in_vram = 15  # billion params
-
-# Evaluate both configurations
-print("LLM Performance Comparison\n" + "=" * 50)
-
-CTX_SIZE = 32768
-for motherboard in motherboards:
-    build = PCBuild(motherboard, cpu)
-    build.fill(ram_stick, gpu_card)
-
-    perf = build.performance(llm, CTX_SIZE)
-
-    print(f"\n{motherboard.name}:")
-    print(f"  Total Price: ${build.price()}")
-    print(f"  Token Gen Speed: {perf['gen_speed_tps']:.1f} tokens/sec")
-    print(f"  Prompt Speed: {perf['prompt_speed_tps']} tokens/sec")
-    print(f"  GPUs: {perf['components']['gpu_count']}x{gpu_card.vram_gb}GB")
-    print(
-        f"  VRAM: {perf['components']['total_vram_gb']}GB (Requires {perf['components']['vram_required']}GB)"
+# --- Main Execution ---
+if __name__ == "__main__":
+    # Define Components
+    rtx_3090 = GPU(
+        name="RTX 3090", price=1000, vram_gb=24, memory_bw_gbps=930, tflops=35
     )
-    if perf["vram_warning"]:
-        print("  " + perf["vram_warning"])
-    else:
-        print(f"Would take:")
-        for prompt_length, generation_length in (
-            (10000, 1000),
-            (1000, 1000),
-            (1000, 100),
-            (1000, 10000),
-            (100, 1000),
-        ):
-            t = (
-                prompt_length / perf["prompt_speed_tps"]
-                + generation_length / perf["gen_speed_tps"]
-            )
-            print(
-                f"  {t:0.2f} seconds for {prompt_length} sequence and generate {generation_length} ."
-            )
+    epyc_9543 = CPU(
+        name="Epyc 9543", price=900, tflops=0.3
+    )  # Note: CPU TFlops is mostly ignored
+    ddr5_ram = RAM(
+        name="DDR5 Server RAM 64GB",
+        price=300,
+        capacity_gb=64,
+        memory_bw_per_module_gbps=35,
+    )
+
+    # Define Motherboards
+    mobo_7_pcie = Motherboard(
+        name="7-PCIe Slot Server", price=1500, pcie_slots=7, ram_slots=8
+    )
+    mobo_4_pcie = Motherboard(
+        name="4-PCIe Slot Server", price=1000, pcie_slots=4, ram_slots=12
+    )
+
+    # Define LLMs (with estimated parameters for 5-bit quantization)
+    # Note: kvcache_size is estimated from model architecture (2 * layers * hidden_dim * bytes)
+    # and normalized to GB per token at 1-bit precision.
+    llms = [
+        LLM(
+            name="Mixtral 8x22B (5-bit)",
+            total_parameters=141,
+            active_parameters_per_token=45,
+            kvcache_size_per_user_token_gb=0.6e-3,
+        ),
+        LLM(
+            name="Qwen2 257B-A14B (5-bit)",
+            total_parameters=257,
+            active_parameters_per_token=14,
+            kvcache_size_per_user_token_gb=1.2e-3,
+        ),
+        LLM(
+            name="DeepSeek R1 680B (5-bit)",
+            total_parameters=680,
+            active_parameters_per_token=20,
+            kvcache_size_per_user_token_gb=1.0e-3,
+        ),
+    ]
+
+    builds = [
+        PCBuild(mobo_7_pcie, epyc_9543).fill(ddr5_ram, rtx_3090),
+        PCBuild(mobo_4_pcie, epyc_9543).fill(ddr5_ram, rtx_3090),
+    ]
+
+    # Run Analysis
+    results = []
+    context_lengths = [1024, 8192]
+
+    for build in builds:
+        for llm in llms:
+            for context in context_lengths:
+                perf = build.performance(llm, context)
+                result_row = {
+                    "Build": f"{build.motherboard.pcie_slots}x {build.gpus[0].name}",
+                    "LLM": llm.name,
+                    "Context": context,
+                    **perf,
+                }
+                results.append(result_row)
+
+    # Display Results
+    df = pd.DataFrame(results)
+    print("LLM Performance Estimation on Custom PC Builds")
+    print("-" * 50)
+    print(df.to_string())
