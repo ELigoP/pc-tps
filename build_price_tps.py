@@ -1,5 +1,9 @@
 from dataclasses import dataclass
 from typing import Any, List, Optional
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import os
 
 # --- Component and Model Definitions ---
 
@@ -451,57 +455,96 @@ if __name__ == "__main__":
             )
         )
 
-    # Run Performance Analysis
-    header_line = (
-        f"{'Build':>41} "
-        f"| {'Price ($)':<9} "
-        f"| {'LLM':<21} "
-        f"| {'CTX':<5} "
-        f"| {'PP (tps)':<8} "
-        f"| {'TG (tps)':<8} "
-        f"| {'RAM/VRAM (GB)':<13}"
-    )
-    print(header_line)
-    print("-" * len(header_line))
+    # --- Performance Analysis and Data Collection ---
+    all_results = []
 
-    for context_length in (
-        # 32,
-        512,
-        16384,
-    ):
-        for model in models:
-            for build in builds:
-                price = build.price(
-                    [ddr4_non_ecc] * 3,
-                    [rtx_3090] * 5,
-                    [epyc_9543],
-                    [tp_3970],
-                    [old_mb_4_gpu],
-                )
+    for model in models:
+        for build in builds:
+            for context_length in [2**pow for pow in range(5, 16)]:
                 results = build.performance(
                     llm=model, context_length=context_length, kv_cache_bpw=2
                 )
 
-                if results["pp_tps"] > 0:
-                    print(
-                        f"{str(build):>41} "
-                        f"| {price:>9} "
-                        f"| {model.name:>21} "
-                        f"| {context_length:>5} "
-                        f"| {results['pp_tps']:>8.1f} "
-                        f"| {results['tg_tps']:>8.1f} "
-                        f"| {results['model_on_ram_gb']:>5.1f} / {results['model_on_vram_gb']:>5.1f}"
-                    )
-                else:
-                    print(
-                        f"{str(build):>41} "
-                        f"| {price:>9} "
-                        f"| {model.name:>21} "
-                        f"| {context_length:>5} "
-                        f"| {'OOM':>8} "
-                        f"| {'OOM':>8} "
-                        f"| {'OOM':>13}"
-                    )
+                # Store results for plotting
+                all_results.append(
+                    {
+                        "Build": str(build),
+                        "LLM": model.name,
+                        "CTX": context_length,
+                        "PP (tps)": results["pp_tps"],
+                        "TG (tps)": results["tg_tps"],
+                    }
+                )
 
-    print("-" * len(header_line))
-    print(header_line)
+    # Convert results to DataFrame
+    df = pd.DataFrame(all_results)
+
+    # --- Plotting ---
+
+    # Create a directory for plots if it doesn't exist
+    if not os.path.exists("plots"):
+        os.makedirs("plots")
+
+    unique_models = df["LLM"].unique()
+
+    for model_name in unique_models:
+        print(f"Generating plot for {model_name}...")
+
+        fig, ax1 = plt.subplots(figsize=(12, 7))
+        ax2 = ax1.twinx()  # Create a second y-axis
+
+        model_df = df[df["LLM"] == model_name].copy()
+
+        # Replace 'OOM' with NaN so it's not plotted
+        model_df.replace("OOM", np.nan, inplace=True)
+        model_df = model_df.dropna()
+
+        build_names = model_df["Build"].unique()
+        colors = plt.cm.get_cmap("tab10", len(build_names))
+
+        for i, build_name in enumerate(build_names):
+            build_df = model_df[model_df["Build"] == build_name]
+
+            # Plot Prompt Processing (PP) on the left axis
+            ax1.plot(
+                build_df["CTX"],
+                build_df["PP (tps)"],
+                label=f"{build_name} - PP",
+                color=colors(i),
+                linestyle="-",
+            )
+
+            # Plot Token Generation (TG) on the right axis
+            ax2.plot(
+                build_df["CTX"],
+                build_df["TG (tps)"],
+                label=f"{build_name} - TG",
+                color=colors(i),
+                linestyle="--",
+            )
+
+        # Formatting the plot
+        ax1.set_xlabel("Context Length (CTX)")
+        ax1.set_ylabel("Prompt Processing (tokens/s)", color="blue")
+        ax2.set_ylabel("Token Generation (tokens/s)", color="red")
+
+        ax1.tick_params(axis="y", labelcolor="blue")
+        ax2.tick_params(axis="y", labelcolor="red")
+
+        ax1.set_xscale("log")  # Log scale for context length is often useful
+
+        plt.title(f"LLM Performance vs. Context Length for {model_name}")
+
+        # Create a single legend for both axes
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(lines1 + lines2, labels1 + labels2, loc="best")
+
+        fig.tight_layout()
+
+        # Sanitize filename
+        safe_model_name = (
+            model_name.replace(" ", "_").replace("/", "_").replace(".", "")
+        )
+        plot_filename = os.path.join("plots", f"{safe_model_name}_performance.png")
+        plt.savefig(plot_filename)
