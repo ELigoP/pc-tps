@@ -263,8 +263,8 @@ class PCBuild:
             else 0
         )
 
-        ttft = max(t_gpu_work_prefill, t_ram_work_prefill) + t_comm_prefill
-        # ttft = t_gpu_work_prefill + t_ram_work_prefill + t_comm_prefill
+        # ttft = max(t_gpu_work_prefill, t_ram_work_prefill) + t_comm_prefill
+        ttft = t_gpu_work_prefill + t_ram_work_prefill + t_comm_prefill
 
         # --- 4. Decode Phase (TPOT) Calculation ---
 
@@ -404,12 +404,13 @@ if __name__ == "__main__":
     ]:
         for bpw in (
             # 2.6,
+            # 2.9,
             3.5,
             5,
             # 8,
         ):
-            if _model_params["name"].startswith("Qwen") and bpw < 3:
-                continue
+            # if _model_params["name"].startswith("Qwen") and bpw < 3:
+            #     continue
             model_params = _model_params.copy()
             model_params["name"] = f"{_model_params['name']} {bpw:.1f}b"
             models.append(
@@ -422,7 +423,7 @@ if __name__ == "__main__":
     # Create PC Builds
     builds: List[PCBuild] = []
     for motherboard, cpu, ram, gpu, n_ram, n_gpu in (
-        # (old_mb_4_gpu, tp_3970, ddr4_non_ecc, rtx_3090, 3, None),
+        (old_mb_4_gpu, tp_3970, ddr4_non_ecc, rtx_3090, 3, None),
         # (old_mb_4_gpu, tp_3970, ddr4_non_ecc, rtx_3090, 4, None),
         #####
         # (mb_4_gpu, epyc_9543, ddr5_ecc, rtx_3090, 3, None),
@@ -432,7 +433,7 @@ if __name__ == "__main__":
         # (mb_7_gpu, epyc_9543, ddr5_ecc_small, rtx_3090, None, 5),
         #####
         (mb_4_gpu, epyc_9543, ddr5_ecc, rtx_3090, 7, None),
-        (mb_7_gpu, epyc_9543, ddr5_ecc, rtx_3090, 4, 5),
+        (mb_7_gpu, epyc_9543, ddr5_ecc, rtx_3090, 5, 5),
         #####
         # (mb_4_gpu, epyc_9543, ddr5_ecc, rtx_3090, None, None),
         # (mb_7_gpu, epyc_9543, ddr5_ecc, rtx_3090, None, 5),
@@ -465,7 +466,7 @@ if __name__ == "__main__":
 
     for context_length in (
         # 32,
-        # 512,
+        512,
         16384,
     ):
         for model in models:
