@@ -17,6 +17,6 @@ Also enter model parameters for which you want to get performance estimate. Ther
 
 Then run `python build_price_tps.py`. You will get plots as pictures in `plots` dir, similar to
 
-![Prompt Processing and Token Generation performance plot for DeepSeek R1model quantized to 2.9 bits per weight](/ELigoP/pc-tps/img/DS_671B_R1_2.9b_tps.png)
+![Prompt Processing and Token Generation performance plot for DeepSeek R1model quantized to 2.9 bits per weight](/img/DS_671B_R1_2.9b_tps.png)
 
-![Prompt Processing and Token Generation performance plot for Qwen3 235B A22B model quantized to 5 bits per weight](/ELigoP/pc-tps/img/Qwen3_235B-A22B_5.0b_tps.png)
+![Prompt Processing and Token Generation performance plot for Qwen3 235B A22B model quantized to 5 bits per weight](/img/Qwen3_235B-A22B_5.0b_tps.png)
